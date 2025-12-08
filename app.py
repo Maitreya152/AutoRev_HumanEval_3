@@ -33,7 +33,6 @@ st.markdown("""
 <style>
     .block-container {padding-top: 1rem;}
     iframe {width: 100%; height: 80vh;}
-    /* Highlight the download button area slightly */
     .stDownloadButton {text-align: center;}
 </style>
 """, unsafe_allow_html=True)
@@ -41,28 +40,20 @@ st.markdown("""
 # --- Helper Functions ---
 
 def display_pdf(file_path):
-    """
-    Provides a Download button and attempts to embed the PDF.
-    """
+    """Provides a Download button and attempts to embed the PDF."""
     try:
         with open(file_path, "rb") as f:
             pdf_bytes = f.read()
-            
         file_name = os.path.basename(file_path)
 
-        # --- Option 1: Download Button (Robust for Large Files) ---
         st.download_button(
             label=f"📥 Download {file_name}",
             data=pdf_bytes,
             file_name=file_name,
             mime="application/pdf",
-            use_container_width=True  # Makes the button span the column width
+            use_container_width=True
         )
         
-        # --- Option 2: Embed (Visual Preview) ---
-        # Note: Very large base64 strings can still freeze some browsers. 
-        # You could add a size check here (e.g., if len(pdf_bytes) < 5MB) 
-        # but the download button above serves as the fallback.
         base64_pdf = base64.b64encode(pdf_bytes).decode('utf-8')
         pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" type="application/pdf"></iframe>'
         st.markdown(pdf_display, unsafe_allow_html=True)
@@ -73,9 +64,7 @@ def display_pdf(file_path):
         st.error(f"Error loading PDF: {e}")
 
 def parse_review(review_text):
-    """
-    Parses a review string into a dictionary of sections and bullet points.
-    """
+    """Parses a review string into a dictionary of sections and bullet points."""
     if not isinstance(review_text, str):
         return {
             "Summary": ["Review not available."], "Strengths": [], "Weaknesses": [], "Questions": []
@@ -83,7 +72,6 @@ def parse_review(review_text):
 
     sections = { "Summary": [], "Strengths": [], "Weaknesses": [], "Questions": [] }
     
-    # Regex parsing
     summary_match = re.search(r'\*\*Summary\*\*(.*?)(?=\*\*Strengths\*\*|\Z)', review_text, re.DOTALL)
     strengths_match = re.search(r'\*\*Strengths\*\*(.*?)(?=\*\*Weaknesses\*\*|\Z)', review_text, re.DOTALL)
     weaknesses_match = re.search(r'\*\*Weaknesses\*\*(.*?)(?=\*\*Questions\*\*|\Z)', review_text, re.DOTALL)
@@ -116,7 +104,6 @@ def load_global_data():
     }
     
     try:
-        # 1. Metadata
         if (DATA_DIR / "user.csv").exists():
             data_store["users"] = pd.read_csv(DATA_DIR / "user.csv")
             data_store["users"].columns = data_store["users"].columns.str.strip()
@@ -125,7 +112,6 @@ def load_global_data():
             data_store["mapping"] = pd.read_csv(DATA_DIR / "mapping.csv")
             data_store["mapping"].columns = data_store["mapping"].columns.str.strip()
 
-        # 2. COLM
         p_c_53 = COLM_JSON_DIR / "inference_new_papers_5_3.json"
         p_c_55 = COLM_JSON_DIR / "inference_new_papers_5_5.json"
         if p_c_53.exists():
@@ -133,7 +119,6 @@ def load_global_data():
         if p_c_55.exists():
             with open(p_c_55, 'r', encoding='utf-8') as f: data_store["colm"]["5_5"] = json.load(f)
 
-        # 3. NeurIPS
         p_n_53 = NEURIPS_JSON_DIR / "inference_new_papers_5_3.json"
         p_n_55 = NEURIPS_JSON_DIR / "inference_new_papers_5_5.json"
         if p_n_53.exists():
@@ -148,15 +133,29 @@ def load_global_data():
 
 def get_paper_details(paper_id, data_store):
     """Locates paper in COLM or NeurIPS."""
-    # Check COLM
     if paper_id in data_store["colm"]["5_3"] or paper_id in data_store["colm"]["5_5"]:
         return COLM_PDF_DIR / f"{paper_id}.pdf", data_store["colm"]["5_3"].get(paper_id), data_store["colm"]["5_5"].get(paper_id), "COLM"
 
-    # Check NeurIPS
     if paper_id in data_store["neurips"]["5_3"] or paper_id in data_store["neurips"]["5_5"]:
         return NEURIPS_PDF_DIR / f"{paper_id}.pdf", data_store["neurips"]["5_3"].get(paper_id), data_store["neurips"]["5_5"].get(paper_id), "NeurIPS"
         
     return None, None, None, None
+
+def check_submission_status(user_id, paper_id):
+    """Checks if the user has already submitted."""
+    if not os.path.exists(RESULTS_CSV_PATH):
+        return False
+    try:
+        df = pd.read_csv(RESULTS_CSV_PATH)
+        if 'user' in df.columns and 'paper_id' in df.columns:
+            existing_submission = df[
+                (df['user'].astype(str) == str(user_id)) & 
+                (df['paper_id'].astype(str) == str(paper_id))
+            ]
+            return not existing_submission.empty
+    except Exception:
+        return False
+    return False
 
 def save_results(new_records):
     """Saves to CSV."""
@@ -226,7 +225,72 @@ if current_user_id and selected_paper_id:
         if not review_53 and not review_55:
             st.error("JSON entries empty.")
         else:
-            # Blind A/B
+            # --- STATUS & SUBMIT BUTTON (MOVED TO TOP) ---
+            is_submitted = check_submission_status(current_user_id, selected_paper_id)
+            
+            if is_submitted:
+                st.success("✅ You have already submitted evaluations for this paper.")
+            else:
+                # Place button here, process validation by reading session state
+                if st.button("Submit Evaluation", type="primary"):
+                    records = []
+                    valid = True
+                    
+                    for r_type in ['5_3', '5_5']:
+                        # Re-parse to get structure for validation
+                        raw_sub = reviews_map.get(r_type)
+                        txt_sub = raw_sub.get("inference_review", "") if isinstance(raw_sub, dict) else raw_sub
+                        parsed_sub = parse_review(txt_sub)
+
+                        # Check Summary
+                        s_val = st.session_state.get(f"{selected_paper_id}_{r_type}_Summary")
+                        if not s_val or s_val == "Select...":
+                            valid = False
+                            break
+                        
+                        records.append({
+                            "timestamp": datetime.now().isoformat(),
+                            "user": current_user_id,
+                            "paper_id": selected_paper_id,
+                            "review_type": r_type,
+                            "section": "Summary",
+                            "point_index": 0,
+                            "point_text": parsed_sub.get("Summary", [""])[0],
+                            "rating": s_val
+                        })
+                        
+                        # Check Points
+                        for sec in ["Strengths", "Weaknesses", "Questions"]:
+                            for i, txt in enumerate(parsed_sub.get(sec, [])):
+                                p_key = f"{selected_paper_id}_{r_type}_{sec}_{i}"
+                                p_val = st.session_state.get(p_key)
+                                
+                                if not p_val or p_val == "Select...":
+                                    valid = False
+                                    break
+
+                                records.append({
+                                    "timestamp": datetime.now().isoformat(),
+                                    "user": current_user_id,
+                                    "paper_id": selected_paper_id,
+                                    "review_type": r_type,
+                                    "section": sec,
+                                    "point_index": i,
+                                    "point_text": txt,
+                                    "rating": p_val
+                                })
+                        if not valid: break
+                    
+                    if valid:
+                        save_results(records)
+                        st.success("Saved successfully!")
+                        st.rerun() # Refresh so the success message/locked state appears
+                    else:
+                        st.error("Please ensure all fields (Summary and Points) are rated for both Review sets.")
+
+            st.markdown("---")
+
+            # --- RENDER TABS & WIDGETS ---
             session_key = f"order_{selected_paper_id}"
             if session_key not in st.session_state:
                 opts = ['5_3', '5_5']
@@ -241,7 +305,6 @@ if current_user_id and selected_paper_id:
                 with tab:
                     raw_data = reviews_map.get(r_type)
                     
-                    # Extract string
                     review_text = ""
                     if isinstance(raw_data, dict):
                         review_text = raw_data.get("inference_review", "") or raw_data.get("prediction", "")
@@ -250,7 +313,6 @@ if current_user_id and selected_paper_id:
                     
                     parsed_data = parse_review(review_text)
 
-                    # --- Evaluation Form ---
                     with st.container(border=True):
                         # 1. Summary
                         st.markdown("##### Summary")
@@ -272,12 +334,9 @@ if current_user_id and selected_paper_id:
                             if points:
                                 st.markdown(f"##### {section}")
                                 for i, pt in enumerate(points):
-                                    # Create columns: Left (Text), Right (Dropdown)
                                     c_text, c_input = st.columns([3, 1])
-                                    
                                     with c_text:
                                         st.markdown(f"- {pt}")
-                                    
                                     with c_input:
                                         p_key = f"{selected_paper_id}_{r_type}_{section}_{i}"
                                         st.selectbox(
@@ -286,63 +345,7 @@ if current_user_id and selected_paper_id:
                                             key=p_key,
                                             label_visibility="collapsed"
                                         )
-                                
                                 if section != "Questions":
                                     st.divider()
-
-            st.markdown("---")
-            if st.button("Submit Evaluation", type="primary"):
-                records = []
-                valid = True
-                
-                for r_type in ['5_3', '5_5']:
-                    # Re-parse to get text
-                    raw_sub = reviews_map.get(r_type)
-                    txt_sub = raw_sub.get("inference_review", "") if isinstance(raw_sub, dict) else raw_sub
-                    parsed_sub = parse_review(txt_sub)
-
-                    # Check Summary
-                    s_val = st.session_state.get(f"{selected_paper_id}_{r_type}_Summary")
-                    if not s_val or s_val == "Select...":
-                        valid = False
-                        break
-                    
-                    records.append({
-                        "timestamp": datetime.now().isoformat(),
-                        "user": current_user_id,
-                        "paper_id": selected_paper_id,
-                        "review_type": r_type,
-                        "section": "Summary",
-                        "point_index": 0,
-                        "point_text": parsed_sub.get("Summary", [""])[0],
-                        "rating": s_val
-                    })
-                    
-                    for sec in ["Strengths", "Weaknesses", "Questions"]:
-                        for i, txt in enumerate(parsed_sub.get(sec, [])):
-                            p_key = f"{selected_paper_id}_{r_type}_{sec}_{i}"
-                            p_val = st.session_state.get(p_key)
-                            
-                            if not p_val or p_val == "Select...":
-                                valid = False
-                                break
-
-                            records.append({
-                                "timestamp": datetime.now().isoformat(),
-                                "user": current_user_id,
-                                "paper_id": selected_paper_id,
-                                "review_type": r_type,
-                                "section": sec,
-                                "point_index": i,
-                                "point_text": txt,
-                                "rating": p_val
-                            })
-                    if not valid: break
-                
-                if valid:
-                    save_results(records)
-                    st.success("Saved successfully!")
-                else:
-                    st.error("Please ensure all fields (Summary and Points) are rated for both Review sets.")
 else:
     st.info("👈 Select a user from the sidebar to start.")
